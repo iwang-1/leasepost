@@ -1,0 +1,5 @@
+{
+  "jobs": 256,
+  "worker_process_slots": 8,
+  "validated_histories": 256
+}
