@@ -77,3 +77,22 @@ class QueueTests(unittest.TestCase):
             worker.stdout.close()
         self.now = 105
         self.assertEqual(self.queue.claim("replacement")["generation"], 2)
+
+    def test_concurrent_redrive_is_idempotent_and_retains_fences(self):
+        for generation in (1, 2):
+            self.queue.claim("a")
+            self.queue.transition(self.job, "a", generation, "fail")
+            self.now += 10
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            statuses = list(pool.map(lambda _: self.queue.redrive(self.job, 2), range(8)))
+        self.assertEqual(statuses.count("accepted"), 1)
+        self.assertEqual(statuses.count("replayed"), 7)
+        with self.assertRaises(Conflict):
+            self.queue.redrive(self.job, 2, 2)
+        self.assertEqual(self.queue.claim("a")["generation"], 3)
+        with self.assertRaises(Conflict):
+            self.queue.transition(self.job, "a", 2, "complete")
+        self.queue.transition(self.job, "a", 3, "complete")
+        self.assertEqual(self.queue.redrive(self.job, 2), "replayed")
+        self.assertEqual(self.queue.inspect(self.job)["state"], "done")
+        self.assertEqual(self.queue.submit("tile-7", {"tile":7}, 2), self.job)

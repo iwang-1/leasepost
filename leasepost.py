@@ -27,6 +27,9 @@ class Queue:
                 CREATE TABLE IF NOT EXISTS history(
                     seq INTEGER PRIMARY KEY, job INTEGER NOT NULL REFERENCES jobs(id),
                     generation INTEGER NOT NULL, event TEXT NOT NULL, at REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS redrives(job INTEGER NOT NULL REFERENCES jobs(id),
+                    failed_generation INTEGER NOT NULL, extra_attempts INTEGER NOT NULL,
+                    PRIMARY KEY(job,failed_generation));
                 CREATE INDEX IF NOT EXISTS job_history ON history(job, seq);
             """)
 
@@ -64,7 +67,9 @@ class Queue:
         with self.transaction() as (db, now):
             old = db.execute("SELECT * FROM jobs WHERE request_key=?", (key,)).fetchone()
             if old:
-                if old["payload"] != encoded or old["max_attempts"] != attempts:
+                added, = db.execute("SELECT COALESCE(SUM(extra_attempts),0) FROM redrives WHERE job=?",
+                                    (old["id"],)).fetchone()
+                if old["payload"] != encoded or old["max_attempts"] - added != attempts:
                     raise Conflict("request key already used with different input")
                 return old["id"]
             job = db.execute("""INSERT INTO jobs(request_key,payload,max_attempts,state,ready)
@@ -123,6 +128,25 @@ class Queue:
                 event = {"done": "completed", "queued": "retry_scheduled", "dead": "failed_dead"}[state]
             self.log(db, job, generation, event, now)
 
+    def redrive(self, job, failed_generation, extra_attempts=1):
+        """Retry one specific dead generation, preserving all lease fences."""
+        if type(extra_attempts) is not int or extra_attempts < 1:
+            raise ValueError("extra attempts must be positive")
+        with self.transaction() as (db, now):
+            previous = db.execute("SELECT extra_attempts FROM redrives WHERE job=? AND failed_generation=?",
+                                  (job, failed_generation)).fetchone()
+            if previous is not None:
+                if previous[0] != extra_attempts:
+                    raise Conflict("redrive already accepted with different attempt limit")
+                return "replayed"
+            changed = db.execute("""UPDATE jobs SET state='queued',ready=?,max_attempts=max_attempts+?
+                WHERE id=? AND state='dead' AND generation=?""", (now, extra_attempts, job, failed_generation))
+            if changed.rowcount != 1:
+                raise Conflict("expected the specified dead generation")
+            db.execute("INSERT INTO redrives VALUES(?,?,?)", (job, failed_generation, extra_attempts))
+            self.log(db, job, failed_generation, "redriven", now)
+            return "accepted"
+
     def inspect(self, job):
         with self.connection() as db:
             db.execute("BEGIN")
@@ -149,6 +173,10 @@ def main():
     claim = sub.add_parser("claim")
     claim.add_argument("owner")
     claim.add_argument("--seconds", type=int, default=30)
+    redrive = sub.add_parser("redrive")
+    redrive.add_argument("job", type=int)
+    redrive.add_argument("generation", type=int)
+    redrive.add_argument("--extra-attempts", type=int, default=1)
     for operation in ("complete", "fail", "renew", "inspect"):
         cmd = sub.add_parser(operation)
         cmd.add_argument("job", type=int)
@@ -166,6 +194,8 @@ def main():
             out = q.submit(args.key, args.payload, args.attempts)
         elif args.cmd == "claim":
             out = q.claim(args.owner, args.seconds)
+        elif args.cmd == "redrive":
+            out = {"status": q.redrive(args.job, args.generation, args.extra_attempts)}
         elif args.cmd == "inspect":
             out = q.inspect(args.job)
         else:

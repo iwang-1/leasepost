@@ -35,3 +35,7 @@ python3 experiment.py --jobs 256 --workers 8
 ```
 
 The tests race twelve claim attempts for one job, exercise the exact expiry boundary with a controlled clock, reject a stale generation even when the worker name is reused, and kill a real child process after its claim commits. The separate contention experiment checks every result and its event sequence in a fresh database. The [recorded run](evidence/contention.json) validated 256 job histories with eight worker-process slots. This is a bounded correctness experiment. It does not measure throughput or cover machine power loss.
+
+### Recover an exhausted job
+
+Inspect the dead job, then run `python3 leasepost.py redrive JOB_ID FAILED_GENERATION --extra-attempts 1`. The queue atomically grants the extra attempt and records the specific failure generation. Repeating the command, even after the job succeeds, returns its recorded disposition. A conflicting attempt limit fails. A replacement lease always receives a higher generation. The contention regression races eight redrives of one dead job and checks that exactly one extends the attempt budget.
