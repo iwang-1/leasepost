@@ -1,6 +1,15 @@
 # LeasePost
 
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/) [![dependencies: standard library only](https://img.shields.io/badge/dependencies-stdlib_only-brightgreen)](#)
+
 A durable background-job queue for worker processes sharing one local disk. The hard case is a paused worker: its lease expires, a replacement finishes the job, then the original worker wakes up and tries to publish an obsolete result. LeasePost checks a generation number and the lease deadline in the same transaction that stores the result.
+
+## At a glance
+
+- **Fenced leases.** A paused worker whose lease expired cannot overwrite the result of the worker that replaced it: generation and deadline are checked in the same transaction that stores the result.
+- **Contention-tested.** **256** job histories validated across **8** concurrent worker processes; tests race **12** claims for one job and kill a real process right after its claim commits.
+- **Exactly-once redrive.** **8** racing redrives of one dead job extend its attempt budget exactly once.
+- Exponential retry, dead-letter state and an ordered audit history per job, all on SQLite WAL.
 
 ## Try a job
 
